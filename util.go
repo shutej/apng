@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package png
+package apng
 
-const pngHeader = "\x89PNG\r\n\x1a\n"
+const PngHeader = "\x89PNG\r\n\x1a\n"
 
 // Filter type, as per the PNG spec.
 const (

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package png
+package apng
 
 // intSize is either 32 or 64.
 const intSize = 32 << (^uint(0) >> 63)

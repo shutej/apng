@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package png
+package apng
 
 import (
 	"bufio"
@@ -168,7 +168,7 @@ type Chunk_PLTE struct {
 }
 
 // NewChunk_PLTE makes a new palette chunk from a color.Palette.
-func NewChunk_PLTE(p color.Palette) {
+func NewChunk_PLTE(p color.Palette) *Chunk_PLTE {
 	chunk := &Chunk_PLTE{
 		data: make([]byte, 3*len(p)),
 	}
@@ -178,6 +178,7 @@ func NewChunk_PLTE(p color.Palette) {
 		chunk.data[3*i+1] = c1.G
 		chunk.data[3*i+2] = c1.B
 	}
+	return chunk
 }
 
 // WriteTo encodes the palette chunk to the io.Writer.  This supports the
@@ -193,7 +194,7 @@ type Chunk_tRNS struct {
 }
 
 // NewChunk_tRNS makes a new transparency chunk from a color.Palette.
-func NewChunk_tRNS(p color.Palette) {
+func NewChunk_tRNS(p color.Palette) *Chunk_tRNS {
 	chunk := &Chunk_tRNS{
 		data: make([]byte, len(p)),
 	}
@@ -201,6 +202,7 @@ func NewChunk_tRNS(p color.Palette) {
 		c1 := color.NRGBAModel.Convert(c).(color.NRGBA)
 		chunk.data[i] = c1.A
 	}
+	return chunk
 }
 
 // WriteTo encodes the transparency chunk to the io.Writer.  This supports the
@@ -319,6 +321,12 @@ func (aw atomWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+type Encoder interface {
+	Next() bool
+	Chunk() io.WriterTo
+	Err() error
+}
+
 // Encoder_IDAT is used to encode an image into one or more image data chunks.
 type Encoder_IDAT struct {
 	aw atomWriter
@@ -326,18 +334,23 @@ type Encoder_IDAT struct {
 }
 
 // NewEncoder_IDAT makes a new image data encoder for the given image and compression level.
-func (c *Chunk_IHDR) NewEncoder_IDAT(m image.Image, cl CompressionLevel) *Encoder_IDAT {
+func (c *Chunk_IHDR) NewEncoder_IDAT(m image.Image, cl CompressionLevel) Encoder {
 	aw := make(atomWriter)
 	go func() {
-		z, err := zlib.NewWriterLevel(bufio.NewWriterSize(aw, 1<<15), cl.zlib())
+		defer close(aw)
+		bw := bufio.NewWriterSize(aw, 1<<15)
+		zw, err := zlib.NewWriterLevel(bw, cl.zlib())
 		if err != nil {
 			aw <- &atom{err: err}
 			return
 		}
-		defer close(aw)
-		if err := writeImage(z, m, c.cb(), cl != NoCompression); err != nil {
+		if err := writeImage(zw, m, c.cb(), cl != NoCompression); err != nil {
 			aw <- &atom{err: err}
 			return
+		}
+		zw.Close()
+		if err := bw.Flush(); err != nil {
+			aw <- &atom{err: err}
 		}
 	}()
 	return &Encoder_IDAT{aw: aw}
@@ -347,11 +360,8 @@ func (c *Chunk_IHDR) NewEncoder_IDAT(m image.Image, cl CompressionLevel) *Encode
 // using either Chunk or Err.
 func (e *Encoder_IDAT) Next() bool {
 	var ok bool
-	if e.Err() != nil {
-		return false
-	}
 	e.a, ok = <-e.aw
-	return ok
+	return ok && e.Err() == nil
 }
 
 // Err returns any errors encountered while encoding image data chunks.
@@ -363,7 +373,7 @@ func (e *Encoder_IDAT) Err() error {
 }
 
 // Chunk returns the current image data chunk.
-func (e *Encoder_IDAT) Chunk() Chunk_IDAT {
+func (e *Encoder_IDAT) Chunk() io.WriterTo {
 	return Chunk_IDAT(e.a.buf)
 }
 
@@ -385,12 +395,12 @@ func (c *Chunk_fdAT) WriteTo(w io.Writer) (int64, error) {
 
 type Encoder_fdAT struct {
 	seq          *SequenceNumbers
-	encoder_IDAT *Encoder_IDAT
+	encoder_IDAT Encoder
 }
 
 // NewEncoder_fdAT makes a new frame data encoder for the given sequence
 // numbers, image, and compression level.
-func (c *Chunk_IHDR) NewEncoder_fdAT(seq *SequenceNumbers, m image.Image, cl CompressionLevel) *Encoder_fdAT {
+func (c *Chunk_IHDR) NewEncoder_fdAT(seq *SequenceNumbers, m image.Image, cl CompressionLevel) Encoder {
 	return &Encoder_fdAT{
 		seq:          seq,
 		encoder_IDAT: c.NewEncoder_IDAT(m, cl),
@@ -409,10 +419,10 @@ func (e *Encoder_fdAT) Err() error {
 }
 
 // Chunk returns the current image data chunk.
-func (e *Encoder_fdAT) Chunk() *Chunk_fdAT {
+func (e *Encoder_fdAT) Chunk() io.WriterTo {
 	return &Chunk_fdAT{
 		SequenceNumber: e.seq.Next(),
-		Chunk_IDAT:     e.encoder_IDAT.Chunk(),
+		Chunk_IDAT:     e.encoder_IDAT.Chunk().(Chunk_IDAT),
 	}
 }
 
